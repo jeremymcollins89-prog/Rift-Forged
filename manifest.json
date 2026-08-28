@@ -1,0 +1,15 @@
+{
+  "name": "Rift-Forged: Card Rush",
+  "short_name": "Rift-Forged",
+  "description": "A dark fantasy card battler — four warring factions, a campaign of 100 stages, and a full battlefield economy.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0812",
+  "theme_color": "#1a1226",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

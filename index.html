@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<title>Rift-Forged: Card Rush</title>
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icon-192.png" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<meta name="theme-color" content="#1a1226" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Rift-Forged" />
+<style>
+  html, body { margin: 0; padding: 0; background: #0a0812; height: 100%; overscroll-behavior: none; }
+  #root { height: calc(var(--vh, 1vh) * 100); }
+  * { -webkit-tap-highlight-color: transparent; }
+  #boot-error { display:none; color:#fff; font-family: monospace; font-size: 12px; padding: 16px; white-space: pre-wrap; background:#3a0a12; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<div id="boot-error"></div>
+<script>
+  // Mobile browsers are inconsistent about CSS vh/dvh once you factor in
+  // address bars that show/hide. Measuring the real visible height in JS
+  // and exposing it as a CSS variable is the most reliable cross-device fix.
+  function setRealVH() {
+    document.documentElement.style.setProperty("--vh", window.innerHeight * 0.01 + "px");
+  }
+  setRealVH();
+  window.addEventListener("resize", setRealVH);
+  window.addEventListener("orientationchange", setRealVH);
+</script>
+<script>
+  // Safety net: if an earlier deploy attempt registered a service worker
+  // that's now serving a stale/broken cached copy, remove it so this load
+  // is always fresh from the network.
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.getRegistrations().then((regs) => {
+      regs.forEach((r) => r.unregister());
+    });
+    if (window.caches) {
+      caches.keys().then((keys) => keys.forEach((k) => caches.delete(k)));
+    }
+  }
+  // Surface any load-time crash on-screen instead of a silent black page.
+  window.addEventListener("error", (e) => {
+    const el = document.getElementById("boot-error");
+    el.style.display = "block";
+    el.textContent = "Load error: " + (e.error ? (e.error.stack || e.error.message) : e.message);
+  });
+</script>
+<script src="app.bundle.js"></script>
+</body>
+</html>
