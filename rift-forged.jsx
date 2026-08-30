@@ -1236,7 +1236,7 @@ const DEFAULT_STATE = {
     r1: { count: 2, level: 1, bonusAtk: 0, bonusHp: 0, equipped: [] },
     r2: { count: 1, level: 1, bonusAtk: 0, bonusHp: 0, equipped: [] },
   },
-  essence: { dragon: 2, alien: 2, robot: 2, human: 2 },
+  essence: { dragon: 2, alien: 2, robot: 2, human: 2, angel: 0 },
   upgrades: { u1: 1, u3: 1, u9: 1 },
   deck: ["d1", "d2", "a1", "r1", "r2"],
   freeSummons: 30, // first-ever-login welcome bonus — only new games get this
@@ -1244,6 +1244,12 @@ const DEFAULT_STATE = {
   activeBattle: null, // in-progress battle snapshot, so closing mid-fight resumes exactly where you left off
   audioSettings: { muted: false, volume: 0.5 },
   avatarId: "d1", // profile picture — one of AVATAR_OPTIONS
+  // Daily login reward — see grantDailyReward(). lastClaimDate/lastMonthlyClaim
+  // are local YYYY-MM-DD / YYYY-MM strings (the player's own calendar day,
+  // not UTC); streak is which day (1-7) of the repeating weekly track was
+  // last claimed, reset to 1 whenever a day is missed.
+  dailyReward: { lastClaimDate: null, streak: 0, lastMonthlyClaim: null },
+  bonusEnergy: 0, // banked extra starting energy from a daily reward, spent on your next fresh single-player battle
 };
 export { DEFAULT_STATE };
 
@@ -1281,6 +1287,12 @@ function migrateLoadedState(loaded) {
   // Existing saves predate the tutorial — never force it on someone who's
   // already playing; only brand-new accounts (DEFAULT_STATE) get it active.
   if (!loaded.tutorial) loaded.tutorial = { active: false, step: 0, completed: true };
+  if (!loaded.dailyReward) loaded.dailyReward = { lastClaimDate: null, streak: 0, lastMonthlyClaim: null };
+  if (loaded.bonusEnergy == null) loaded.bonusEnergy = 0;
+  // Angel was added as a faction after essence tracking existed — backfill
+  // it for saves from before that, so it never renders as "undefined" and a
+  // daily-reward essence roll can safely land on it.
+  if (loaded.essence && loaded.essence.angel == null) loaded.essence.angel = 0;
   Object.keys(loaded.collection || {}).forEach((id) => {
     const e = loaded.collection[id];
     if (e.bonusAtk == null) e.bonusAtk = 0;
@@ -1398,13 +1410,16 @@ function GoldPill({ gold }) {
   );
 }
 
-// A continuously-shimmering rainbow foil, exclusive to Mythic-rarity cards —
+// A continuously-shimmering silver foil, exclusive to Mythic-rarity cards —
 // the "holographic trading card" look. Two blended layers stacked over the
-// art: a rainbow sheen (color-dodge, slow diagonal drift) plus a brighter
-// glare band (overlay, a faster sweep) for that glint-under-the-light pop.
-// Purely decorative — every non-Mythic rarity renders nothing. Every caller
-// already wraps this in an `overflow: hidden` art container, so it clips to
-// that container's own shape without needing its own border-radius.
+// art, both intentionally faint (soft-light/screen at low opacity) so the
+// art's own color and detail always stay the dominant thing you see: a
+// pale silvery sheen (slow diagonal drift) plus a brighter glare band (a
+// faster sweep) for that glint-under-the-light pop, without washing the
+// artwork out into rainbow static. Purely decorative — every non-Mythic
+// rarity renders nothing. Every caller already wraps this in an
+// `overflow: hidden` art container, so it clips to that container's own
+// shape without needing its own border-radius.
 function HoloShine({ rarity }) {
   if (rarity !== "mythic") return null;
   return (
@@ -1415,11 +1430,11 @@ function HoloShine({ rarity }) {
           inset: 0,
           pointerEvents: "none",
           zIndex: 3,
-          mixBlendMode: "color-dodge",
-          opacity: 0.5,
-          background: "repeating-linear-gradient(115deg, #ff5ec4 0%, #ffe38a 12%, #7dffb0 24%, #6fd4ff 36%, #c39bff 48%, #ff5ec4 60%)",
-          backgroundSize: "260% 260%",
-          animation: "holoSheen 4.5s linear infinite",
+          mixBlendMode: "soft-light",
+          opacity: 0.3,
+          background: "repeating-linear-gradient(115deg, #ffffff 0%, #dce6f5 10%, #ffffff 20%, #eef4ff 30%, #ffffff 40%)",
+          backgroundSize: "240% 240%",
+          animation: "holoSheen 6s linear infinite",
         }}
       />
       <div
@@ -1428,11 +1443,11 @@ function HoloShine({ rarity }) {
           inset: 0,
           pointerEvents: "none",
           zIndex: 3,
-          mixBlendMode: "overlay",
-          opacity: 0.65,
-          background: "linear-gradient(100deg, transparent 30%, #ffffffcc 46%, #ffffffcc 54%, transparent 70%)",
+          mixBlendMode: "screen",
+          opacity: 0.22,
+          background: "linear-gradient(100deg, transparent 35%, #ffffffcc 48%, #ffffffcc 52%, transparent 65%)",
           backgroundSize: "260% 260%",
-          animation: "holoGlare 3.1s ease-in-out infinite",
+          animation: "holoGlare 3.6s ease-in-out infinite",
         }}
       />
     </>
@@ -1760,6 +1775,8 @@ function TopBar({ title, onBack, gold, right }) {
 function Home({ state, setState, onNav }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
+  const [dailyOpen, setDailyOpen] = useState(false);
+  const dailyAvailable = dailyRewardAvailable(state);
   const currentAvatar = AVATAR_BY_ID[state.avatarId] || AVATAR_OPTIONS[0];
   const heroes = [
     { id: "d4", color: C.dragon },
@@ -1963,6 +1980,26 @@ function Home({ state, setState, onNav }) {
       <div style={{ padding: "4px 20px 8px", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, flexWrap: "wrap" }}>
         <GoldPill gold={state.gold} />
         <button
+          onClick={() => setDailyOpen(true)}
+          title="Daily Reward"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            background: dailyAvailable ? `linear-gradient(180deg, ${C.panel2}, ${C.panel})` : "transparent",
+            border: `1px solid ${dailyAvailable ? C.gold : C.line}`,
+            borderRadius: 3,
+            padding: "6px 12px",
+            cursor: "pointer",
+            boxShadow: dailyAvailable ? `0 0 10px ${C.gold}55` : "none",
+          }}
+        >
+          <span style={{ fontSize: 13, color: dailyAvailable ? C.gold : C.dim }}>🎁</span>
+          <span style={{ color: dailyAvailable ? C.gold : C.dim, fontWeight: 700, fontSize: 11, fontFamily: FONT_UI, letterSpacing: 0.5 }}>
+            {dailyAvailable ? "Daily Reward" : "Claimed"}
+          </span>
+        </button>
+        <button
           onClick={() => setState((s) => ({ ...s, gold: s.gold + 10000 }))}
           title="Testing tool — adds gold for QA"
           style={{ background: "transparent", border: `1px dashed ${C.line}`, color: C.dim, borderRadius: 3, padding: "6px 10px", fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: FONT_UI }}
@@ -1977,7 +2014,7 @@ function Home({ state, setState, onNav }) {
                 const existing = collection[c.id];
                 collection[c.id] = { count: 10, level: 4, bonusAtk: existing?.bonusAtk || 0, bonusHp: existing?.bonusHp || 0, equipped: existing?.equipped || [] };
               });
-              return { ...s, collection, essence: { dragon: 999, alien: 999, robot: 999, human: 999 } };
+              return { ...s, collection, essence: { dragon: 999, alien: 999, robot: 999, human: 999, angel: 999 } };
             })
           }
           title="Testing tool — unlocks every card at max level, for QA. Remove before release."
@@ -1995,6 +2032,7 @@ function Home({ state, setState, onNav }) {
         <NavCard title="Forge" sub="Merge, equip & upgrade cards" color={C.gold} glyph="✦" onClick={() => onNav("forge")} tutorialId="nav-forge" />
         <NavCard title="Bestiary" sub="Every creature & spell in the game" color={C.human} glyph="☰" artUrl={pickCardArt(CARD_BY_ID.h4, 4)} onClick={() => onNav("bestiary")} />
       </div>
+      {dailyOpen && <DailyRewardModal state={state} setState={setState} onClose={() => setDailyOpen(false)} />}
     </div>
   );
 }
@@ -2040,6 +2078,135 @@ function NavCard({ title, sub, color, glyph, artUrl, onClick, tutorialId }) {
         <div style={{ color: C.ash, fontSize: 11.5, marginTop: 2, fontFamily: FONT_BODY, fontStyle: "italic" }}>{sub}</div>
       </div>
       <div style={{ color, fontSize: 19, fontWeight: 700 }}>›</div>
+    </div>
+  );
+}
+
+function RewardChip({ icon, color, label }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 5, background: `${color}18`, border: `1px solid ${color}66`, borderRadius: 3, padding: "5px 9px" }}>
+      <span style={{ color, fontSize: 12 }}>{icon}</span>
+      <span style={{ color: C.bone, fontSize: 10, fontFamily: FONT_UI, fontWeight: 700 }}>{label}</span>
+    </div>
+  );
+}
+
+// Daily/weekly login reward — a repeating 7-day track (DAILY_REWARD_TRACK)
+// of gold/energy/essence, plus a random Rare card layered on once per real
+// calendar month (see grantDailyReward). Claiming is a single tap; the track
+// row just shows where the player is in the current week at a glance.
+function DailyRewardModal({ state, setState, onClose }) {
+  const [claimedResult, setClaimedResult] = useState(null);
+  const dr = state.dailyReward || { lastClaimDate: null, streak: 0, lastMonthlyClaim: null };
+  const today = todayKey();
+  const alreadyClaimedToday = dr.lastClaimDate === today;
+  // The day about to be claimed (or, if already claimed today, today's own
+  // day — used to render the track's "you are here" marker either way).
+  const trackStreak = alreadyClaimedToday ? dr.streak : isYesterday(dr.lastClaimDate) ? (dr.streak % 7) + 1 : 1;
+  const monthlyAvailable = !alreadyClaimedToday && monthKey(today) !== dr.lastMonthlyClaim;
+
+  const claim = () => {
+    setState((s) => {
+      const { newState, result, claimed } = grantDailyReward(s);
+      if (claimed === false) return s;
+      setClaimedResult(result);
+      return newState;
+    });
+  };
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "#020103ee", zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: `linear-gradient(160deg, ${C.panel2}, ${C.panel})`,
+          border: `1.5px solid ${C.gold}`,
+          borderRadius: 6,
+          padding: "22px 20px",
+          maxWidth: 420,
+          width: "100%",
+          textAlign: "center",
+          boxShadow: `0 10px 40px #000000cc, 0 0 30px ${C.gold}33`,
+        }}
+      >
+        <Ornament color={C.gold} />
+        <div style={{ color: C.gold, fontSize: 17, fontWeight: 900, fontFamily: FONT_DISPLAY, letterSpacing: 1.5, textTransform: "uppercase", marginTop: 4 }}>Daily Reward</div>
+        <div style={{ color: C.dim, fontSize: 10.5, fontFamily: FONT_BODY, fontStyle: "italic", marginTop: 4, marginBottom: 16 }}>
+          Log in every day for a reward — Day 7 is the big one, then the week starts over.
+        </div>
+
+        <div style={{ display: "flex", gap: 5, justifyContent: "center", marginBottom: 16 }}>
+          {DAILY_REWARD_TRACK.map((r) => {
+            const isDone = alreadyClaimedToday ? r.day <= dr.streak : r.day < trackStreak;
+            const isToday = r.day === trackStreak;
+            const isCapstone = r.day === 7;
+            return (
+              <div
+                key={r.day}
+                style={{
+                  width: 44,
+                  padding: "6px 2px",
+                  borderRadius: 4,
+                  border: `1.5px solid ${isToday ? C.gold : isDone ? C.dim : C.line}`,
+                  background: isToday ? `${C.gold}22` : isCapstone ? `${C.mythic}14` : "transparent",
+                  boxShadow: isToday ? `0 0 10px ${C.gold}66` : "none",
+                }}
+              >
+                <div style={{ fontSize: 8, color: isDone ? C.dim : C.ash, fontFamily: FONT_UI, fontWeight: 800 }}>DAY {r.day}</div>
+                <div style={{ fontSize: 13, marginTop: 3 }}>{isDone ? "✓" : isCapstone ? "★" : "◈"}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        {monthlyAvailable && !claimedResult && (
+          <div style={{ color: C.mythic, fontSize: 10.5, fontFamily: FONT_UI, fontWeight: 800, letterSpacing: 0.5, marginBottom: 10, textShadow: `0 0 8px ${C.mythic}66` }}>
+            ✦ Monthly Bonus Ready — a free Rare card today ✦
+          </div>
+        )}
+
+        {claimedResult ? (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+            <div style={{ color: C.gold, fontSize: 13, fontWeight: 700, fontFamily: FONT_DISPLAY, textTransform: "uppercase", letterSpacing: 1 }}>Day {claimedResult.streak} Claimed!</div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center" }}>
+              {claimedResult.reward.gold ? <RewardChip icon="◈" color={C.gold} label={`+${claimedResult.reward.gold} Gold`} /> : null}
+              {claimedResult.reward.energy ? <RewardChip icon="⚡" color={C.robot} label={`+${claimedResult.reward.energy} Energy`} /> : null}
+              {claimedResult.reward.essence ? (
+                <RewardChip icon={FACTION_GLYPH[claimedResult.faction]} color={FACTION_COLOR[claimedResult.faction]} label={`+${claimedResult.reward.essence} ${FACTION_LABEL[claimedResult.faction]} Essence`} />
+              ) : null}
+            </div>
+            {claimedResult.rareCard && (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, marginTop: 6 }}>
+                <div style={{ color: C.mythic, fontSize: 9.5, fontWeight: 800, letterSpacing: 1, textTransform: "uppercase", fontFamily: FONT_UI }}>✦ Monthly Bonus — Rare Card ✦</div>
+                <CardFace cardId={claimedResult.rareCard} level={state.collection[claimedResult.rareCard]?.level || 1} small />
+              </div>
+            )}
+            <button
+              onClick={onClose}
+              style={{ marginTop: 10, background: `linear-gradient(180deg, #F3D27A, ${C.gold})`, color: "#1a1200", border: "1px solid #FFE9B0", borderRadius: 3, padding: "11px 26px", fontWeight: 700, fontFamily: FONT_DISPLAY, letterSpacing: 1.5, textTransform: "uppercase", fontSize: 12, cursor: "pointer" }}
+            >
+              Nice!
+            </button>
+          </div>
+        ) : alreadyClaimedToday ? (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+            <div style={{ color: C.ash, fontSize: 11.5, fontFamily: FONT_BODY, fontStyle: "italic" }}>Already claimed today — come back tomorrow for Day {(dr.streak % 7) + 1}.</div>
+            <button
+              onClick={onClose}
+              style={{ background: C.panel2, color: C.dim, border: `1px solid ${C.line}`, borderRadius: 3, padding: "10px 24px", fontWeight: 700, fontFamily: FONT_DISPLAY, letterSpacing: 1.5, textTransform: "uppercase", fontSize: 12, cursor: "pointer" }}
+            >
+              Close
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={claim}
+            style={{ background: `linear-gradient(180deg, #F3D27A, ${C.gold})`, color: "#1a1200", border: "1px solid #FFE9B0", borderRadius: 3, padding: "13px 30px", fontWeight: 700, fontFamily: FONT_DISPLAY, letterSpacing: 2, textTransform: "uppercase", fontSize: 13, cursor: "pointer", boxShadow: `0 0 14px ${C.gold}66` }}
+          >
+            Claim Day {trackStreak}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -3505,11 +3672,23 @@ function Battle({ state, setState, opponent, savedBattle, onSaveBattle, onExit, 
   const [log, setLog] = useState(sb?.log || ["Battle start! Shop for creatures, then deploy them to the field."]);
   const [playerHp, setPlayerHp] = useState(sb?.playerHp ?? 30);
   const [enemyHp, setEnemyHp] = useState(sb?.enemyHp ?? opponent.hp);
-  const [playerEnergy, setPlayerEnergy] = useState(sb?.playerEnergy ?? 3);
+  // A fresh battle (never a resumed one) spends any banked daily-reward
+  // bonus energy as extra starting energy — see the one-time consumption
+  // effect below, which zeroes state.bonusEnergy right after this reads it.
+  const [playerEnergy, setPlayerEnergy] = useState(sb?.playerEnergy ?? 3 + (state.bonusEnergy || 0));
   const [maxEnergy, setMaxEnergy] = useState(sb?.maxEnergy ?? 3);
   const [enemyEnergy, setEnemyEnergy] = useState(sb?.enemyEnergy ?? 3); // banked, rolls over each round just like the player's
   const [playerBoard, setPlayerBoard] = useState(sb?.playerBoard || Array(SQUAD_SIZE).fill(null));
   const [enemyBoard, setEnemyBoard] = useState(sb?.enemyBoard || Array(SQUAD_SIZE).fill(null));
+
+  // Consume the banked daily-reward bonus energy exactly once, the moment a
+  // FRESH battle starts (playerEnergy above already read it into the
+  // starting value) — never on a resumed one, so reopening a saved battle
+  // can't re-grant or re-consume it.
+  useEffect(() => {
+    if (!sb && state.bonusEnergy) setState((s) => ({ ...s, bonusEnergy: 0 }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Player's shop economy: creature-only deck (from the Deck Builder), expanded
   // into a full 52-card battle deck (chosen cards repeat to fill it out), then
@@ -6133,6 +6312,89 @@ function rewardRarityBandForLevel(level) {
   if (level <= 85) return { common: 0.08, rare: 0.42, legendary: 0.5 };
   return { common: 0, rare: 0.25, legendary: 0.75 };
 }
+/* ============================== DAILY REWARD ============================== */
+// Local (player's own timezone) YYYY-MM-DD / YYYY-MM keys — deliberately NOT
+// UTC, so "today"/"this month" line up with the day the player actually
+// experiences, not some other timezone's calendar flip.
+function localDateKey(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function todayKey() {
+  return localDateKey(new Date());
+}
+function monthKey(dateKey) {
+  return dateKey ? dateKey.slice(0, 7) : null;
+}
+// True when `dateKey` (YYYY-MM-DD) is exactly the calendar day before today —
+// i.e. the streak is still unbroken. Built from real Date objects (not string
+// math) so it's correct across month/year boundaries.
+function isYesterday(dateKey) {
+  if (!dateKey) return false;
+  const d = new Date(dateKey + "T00:00:00");
+  d.setDate(d.getDate() + 1);
+  return localDateKey(d) === todayKey();
+}
+// A repeating 7-day track — day 7 is the biggest ("weekly capstone"), then it
+// loops back to day 1. Most weeks look identical; the only thing that varies
+// week to week is the once-a-month bonus (see grantDailyReward), so this
+// stays intentionally simple and predictable rather than randomized per day.
+const DAILY_REWARD_TRACK = [
+  { day: 1, gold: 50 },
+  { day: 2, gold: 40, energy: 1 },
+  { day: 3, gold: 30, essence: 2 },
+  { day: 4, gold: 75, energy: 1 },
+  { day: 5, gold: 40, essence: 3 },
+  { day: 6, gold: 70, energy: 2 },
+  { day: 7, gold: 150, energy: 3, essence: 4 },
+];
+// Applies today's login reward and returns { newState, result } — or
+// { claimed: false } if today's reward was already claimed (the UI should
+// never let that happen, since it hides/disables the claim button once
+// dailyReward.lastClaimDate === todayKey(), but this stays safe either way).
+// A random RARE, non-Summon-exclusive card is layered on top once per real
+// calendar month (whenever this is the first claim in a month the player
+// hasn't already claimed one in) — the pick uses Math.random() independently
+// on each player's own device at claim time, so there's no single "card of
+// the month" everyone races for; it's genuinely different player to player.
+function grantDailyReward(state) {
+  const today = todayKey();
+  const dr = state.dailyReward || { lastClaimDate: null, streak: 0, lastMonthlyClaim: null };
+  if (dr.lastClaimDate === today) return { claimed: false };
+  const streak = isYesterday(dr.lastClaimDate) ? (dr.streak % 7) + 1 : 1;
+  const reward = DAILY_REWARD_TRACK[streak - 1];
+  const faction = FACTIONS[Math.floor(Math.random() * FACTIONS.length)];
+  const isNewMonth = monthKey(today) !== dr.lastMonthlyClaim;
+
+  let newState = {
+    ...state,
+    gold: state.gold + (reward.gold || 0),
+    bonusEnergy: Math.min(10, (state.bonusEnergy || 0) + (reward.energy || 0)),
+    essence: { ...state.essence, [faction]: (state.essence[faction] || 0) + (reward.essence || 0) },
+  };
+
+  let rareCard = null;
+  if (isNewMonth) {
+    let pool = CARD_DB.filter((c) => c.rarity === "rare" && !c.summonExclusive);
+    if (!pool.length) pool = CARD_DB.filter((c) => c.rarity === "rare");
+    const card = pool[Math.floor(Math.random() * pool.length)];
+    rareCard = card.id;
+    const existing = newState.collection[card.id];
+    newState = {
+      ...newState,
+      collection: {
+        ...newState.collection,
+        [card.id]: existing ? { ...existing, count: existing.count + 1 } : { count: 1, level: 1, bonusAtk: 0, bonusHp: 0, equipped: [] },
+      },
+    };
+  }
+
+  newState.dailyReward = { lastClaimDate: today, streak, lastMonthlyClaim: isNewMonth ? monthKey(today) : dr.lastMonthlyClaim };
+  return { newState, result: { streak, reward, faction, rareCard } };
+}
+function dailyRewardAvailable(state) {
+  return (state.dailyReward?.lastClaimDate ?? null) !== todayKey();
+}
+
 function grantStageFactionCard(state, stageId) {
   const themeIdx = themeIndexForLevel(stageId);
   const faction = STAGE_FACTION[themeIdx] || FACTIONS[Math.floor(Math.random() * FACTIONS.length)];
