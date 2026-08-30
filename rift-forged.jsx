@@ -5461,6 +5461,12 @@ function PvPBattle({ state, matchId, onExit }) {
   const initRef = useRef(false);
   const resolvingRef = useRef(false);
   const seenFightRef = useRef(null);
+  const mySlotRefs = useRef([]); // DOM refs to my 5 board slots, for clash distance measurement
+  const oppSlotRefs = useRef([]); // DOM refs to the opponent's 5 board slots
+  const [pvpAnim, setPvpAnim] = useState(null); // single-attack clash descriptor — mirrors Battle's `anim`
+  const [pvpFx, setPvpFx] = useState([]); // floating ability-trigger badges, see FX_ICON
+  const [pvpHpHit, setPvpHpHit] = useState(null); // "mine" | "opp" — brief HP-bar flash on a face hit
+  const [pvpLog, setPvpLog] = useState(["The battle begins!"]);
 
   useEffect(() => {
     if (!pvp?.db) return;
@@ -5484,6 +5490,28 @@ function PvPBattle({ state, matchId, onExit }) {
   const otherUid = match ? Object.keys(match.players).find((u) => u !== myUid) : null;
   const mySide = match && myUid === match.hostUid ? "A" : "B";
   const oppSide = mySide === "A" ? "B" : "A";
+  const pushPvpLog = (line) => setPvpLog((l) => [...l.slice(-40), line]);
+  // Same measure-the-real-DOM-gap approach single-player's Battle uses, so a
+  // PvP attack visually travels the exact distance between its actual
+  // attacker/defender slots instead of a guessed fixed value.
+  const computeClashTravel = (attackerSide, attackerIdx, defenderIdx) => {
+    if (defenderIdx == null) return { travel: 60, travelX: 0 };
+    const attackerRefs = attackerSide === "mine" ? mySlotRefs : oppSlotRefs;
+    const defenderRefs = attackerSide === "mine" ? oppSlotRefs : mySlotRefs;
+    const attackerEl = attackerRefs.current[attackerIdx];
+    const defenderEl = defenderRefs.current[defenderIdx];
+    if (!attackerEl || !defenderEl) return { travel: 60, travelX: 0 };
+    const aRect = attackerEl.getBoundingClientRect();
+    const dRect = defenderEl.getBoundingClientRect();
+    const aCenterY = aRect.top + aRect.height / 2;
+    const dCenterY = dRect.top + dRect.height / 2;
+    const aCenterX = aRect.left + aRect.width / 2;
+    const dCenterX = dRect.left + dRect.width / 2;
+    return {
+      travel: Math.max(20, Math.abs(aCenterY - dCenterY) / 2),
+      travelX: (dCenterX - aCenterX) / 2,
+    };
+  };
 
   // One-time build of my own shop/deck from MY collection (levels, forge
   // upgrades) — everything after round 1 is refreshed by the host using
@@ -5575,30 +5603,77 @@ function PvPBattle({ state, matchId, onExit }) {
   // Replay a newly-arrived fightResult step-by-step. Purely cosmetic — the
   // authoritative state in Firestore has already moved on to the next round
   // (or the match's end) the moment this data appears, so nothing here
-  // writes anything; it just animates the history the host already computed.
+  // writes anything; it just animates the history the host already computed,
+  // driving the same attack-lunge/dying/hit/fx animation single-player's
+  // Battle screen uses (via BoardRow), plus a scrolling combat log, instead
+  // of just snapping the board/HP numbers straight to their end values.
   useEffect(() => {
     if (!match || !match.fightResult) return;
     if (seenFightRef.current === match.fightResult.resolvedAt) return;
     seenFightRef.current = match.fightResult.resolvedAt;
     const fr = match.fightResult;
+    const meName = match.players[myUid]?.username || "You";
+    const themName = match.players[otherUid]?.username || "Opponent";
     let hpA = fr.startHpA;
     let hpB = fr.startHpB;
     setAnimBoards({ A: fr.startBoardA, B: fr.startBoardB });
     setAnimHp({ A: hpA, B: hpB });
     setAnimActive(true);
+    pushPvpLog(`— Round ${fr.round} —`);
     let cancelled = false;
     (async () => {
+      await new Promise((r) => setTimeout(r, 300));
       for (let i = 0; i < fr.steps.length; i++) {
         if (cancelled) return;
-        await new Promise((r) => setTimeout(r, 550));
         const step = fr.steps[i];
+        // step.side is "A"/"B" (host/other) — translate to this viewer's
+        // "mine"/"opp" so the animation always lunges from the right row
+        // regardless of which client is watching.
+        const attackerSide = step.side === mySide ? "mine" : "opp";
+        const defenderSide = attackerSide === "mine" ? "opp" : "mine";
+        const { travel, travelX } = computeClashTravel(attackerSide, step.atkIdx, step.defIdx);
+        const clashFx = (step.events || []).map((e) => ({ ...e, side: e.side === "atk" ? attackerSide : defenderSide }));
+        const clash = {
+          attackerSide,
+          attackSlots: [step.atkIdx],
+          dying: { [attackerSide]: step.dying.atk, [defenderSide]: step.dying.def },
+          hit: { [defenderSide]: step.hit },
+          faceHit: step.defIdx == null,
+          travel,
+          travelX,
+        };
+        setPvpAnim(clash);
+        setPvpFx(clashFx);
+        if (clash.faceHit) {
+          setPvpHpHit(defenderSide);
+          setTimeout(() => setPvpHpHit(null), 600);
+        }
+        await new Promise((r) => setTimeout(r, clash.faceHit ? 750 : 640));
+        if (cancelled) return;
+
         hpA = Math.max(0, hpA - step.faceDmgA);
         hpB = Math.max(0, hpB - step.faceDmgB);
         setAnimBoards({ A: step.boardA, B: step.boardB });
         setAnimHp({ A: hpA, B: hpB });
+        if (step.faceDmgA > 0) pushPvpLog(`${mySide === "A" ? meName : themName} takes ${step.faceDmgA} damage!`);
+        if (step.faceDmgB > 0) pushPvpLog(`${mySide === "B" ? meName : themName} takes ${step.faceDmgB} damage!`);
+        (step.logs || []).forEach((l) => pushPvpLog(l));
+
+        if ((step.fx || []).length) {
+          // applyAftermath's fxOut always tags its own side as literal
+          // "player"/"enemy" meaning whichever board resolvePvpRound passed
+          // first/second — which is always A/B respectively, not
+          // attacker/defender — so this maps straight off mySide.
+          const aftermathFx = step.fx.map((f) => ({ ...f, side: f.side === "player" ? (mySide === "A" ? "mine" : "opp") : mySide === "A" ? "opp" : "mine" }));
+          setPvpFx(aftermathFx);
+          await new Promise((r) => setTimeout(r, 400));
+          if (cancelled) return;
+        }
+        setPvpAnim(null);
+        setPvpFx([]);
       }
       if (cancelled) return;
-      await new Promise((r) => setTimeout(r, 350));
+      await new Promise((r) => setTimeout(r, 400));
       if (!cancelled) setAnimActive(false);
     })();
     return () => {
@@ -5642,11 +5717,32 @@ function PvPBattle({ state, matchId, onExit }) {
       </div>
     );
   }
-  const isPrep = match.status === "prep" && !my.ready;
+  // Shopping/deploying/readying-up all wait for animActive to clear too —
+  // otherwise, since the host flips status back to "prep" for the next round
+  // in the very same write that carries the just-finished round's
+  // fightResult, the shop would silently re-enable itself while the
+  // previous round's battle animation was still playing.
+  const isPrep = match.status === "prep" && !my.ready && !animActive;
   const displayMyBoard = animActive ? animBoards[mySide] : my.board || [];
   const displayOppBoard = animActive ? animBoards[oppSide] : opp.board || [];
   const displayMyHp = animActive ? animHp[mySide] : my.hp;
   const displayOppHp = animActive ? animHp[oppSide] : opp.hp;
+  // A round that ends the match writes status:"ended" in the SAME update as
+  // its fightResult, so the raw status alone would jump straight to the
+  // end screen and skip showing that final, decisive round entirely.
+  // fightPending stays true from the render that first sees a new
+  // fightResult until the replay effect above marks it seen — synchronously
+  // ahead of the effect actually running — so the fight view always gets
+  // first crack at rendering it, on the very first paint, no flash.
+  const fightPending = !!match.fightResult && seenFightRef.current !== match.fightResult.resolvedAt;
+  const mineAttacking = pvpAnim?.attackerSide === "mine" ? pvpAnim.attackSlots : [];
+  const mineDying = pvpAnim?.dying?.mine || [];
+  const mineHit = pvpAnim?.hit?.mine || [];
+  const oppAttacking = pvpAnim?.attackerSide === "opp" ? pvpAnim.attackSlots : [];
+  const oppDying = pvpAnim?.dying?.opp || [];
+  const oppHit = pvpAnim?.hit?.opp || [];
+  const mineFxList = pvpFx.filter((f) => f.side === "mine");
+  const oppFxList = pvpFx.filter((f) => f.side === "opp");
   const matchRef = doc(pvp.db, "pvpMatches", matchId);
 
   const writeMine = (patch) => {
@@ -5719,7 +5815,7 @@ function PvPBattle({ state, matchId, onExit }) {
   const readyUp = () => writeMine({ ready: true });
   const forfeit = () => writeMine({ hp: 0 });
 
-  if (match.status === "ended") {
+  if (match.status === "ended" && !animActive && !fightPending) {
     const win = match.winnerUid === myUid;
     const draw = match.winnerUid === "draw";
     const winnerName = draw ? null : win ? myName : oppName;
@@ -5754,7 +5850,7 @@ function PvPBattle({ state, matchId, onExit }) {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
           <div style={{ color: C.dim, fontSize: 10, fontFamily: FONT_UI, letterSpacing: 1, textTransform: "uppercase" }}>Round {match.round}</div>
           <div style={{ color: secondsLeft <= 10 ? C.danger : C.gold, fontSize: 13, fontWeight: 800, fontFamily: FONT_UI, fontVariantNumeric: "tabular-nums" }}>
-            {match.status === "prep" ? `${secondsLeft}s` : "⚔ Resolving…"}
+            {match.status === "prep" && !animActive ? `${secondsLeft}s` : animActive ? "⚔ Fighting…" : "⚔ Resolving…"}
           </div>
           <button onClick={forfeit} style={{ background: "transparent", border: `1px solid ${C.line}`, color: C.dim, borderRadius: 3, padding: "4px 9px", fontSize: 9.5, fontFamily: FONT_UI, cursor: "pointer" }}>
             Forfeit
@@ -5765,118 +5861,161 @@ function PvPBattle({ state, matchId, onExit }) {
         <HpBar label={myName} hp={displayMyHp} max={30} color={C.gold} />
       </div>
 
-      <div style={{ flex: 1, overflowY: "auto", padding: "10px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
-        <div>
-          <div style={{ color: C.dim, fontSize: 9.5, fontFamily: FONT_UI, letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 }}>{oppName}'s Board</div>
-          <div style={{ display: "flex", gap: 6, overflowX: "auto", padding: "2px 0" }}>
-            {(displayOppBoard.length ? displayOppBoard : Array(SQUAD_SIZE).fill(null)).map((c, i) => (
-              <PvpBoardTile key={i} creature={c} />
-            ))}
-          </div>
-        </div>
-        <div>
-          <div style={{ color: C.dim, fontSize: 9.5, fontFamily: FONT_UI, letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 }}>{oppName}'s Shop</div>
-          <div style={{ display: "flex", gap: 6, overflowX: "auto" }}>
-            {(opp.shop || []).map((inst, i) =>
-              inst ? <CardFace key={i} cardId={inst.cardId} level={inst.level} bonusAtk={inst.bonusAtk} bonusHp={inst.bonusHp} small disabled /> : <div key={i} style={{ width: 60, height: 60 }} />
-            )}
-          </div>
-        </div>
-
-        <Ornament color={C.line} />
-
-        <div>
-          <div style={{ color: C.dim, fontSize: 9.5, fontFamily: FONT_UI, letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 }}>
-            Your Board {selectedHandIdx != null && <span style={{ color: C.gold }}>— tap an empty slot to deploy</span>}
-          </div>
-          <div style={{ display: "flex", gap: 6, overflowX: "auto", padding: "2px 0" }}>
-            {(displayMyBoard.length ? displayMyBoard : Array(SQUAD_SIZE).fill(null)).map((c, i) => (
-              <PvpBoardTile key={i} creature={c} onClick={isPrep ? (c ? () => sellFromBoard(i) : () => deployCard(i)) : undefined} pulse={isPrep && !c && selectedHandIdx != null} />
-            ))}
-          </div>
-        </div>
-        <div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-            <div style={{ color: C.dim, fontSize: 9.5, fontFamily: FONT_UI, letterSpacing: 1, textTransform: "uppercase" }}>Your Shop</div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <button
-                onClick={refreshShop}
-                disabled={!isPrep || my.energy < SHOP_REFRESH_COST}
-                title="Reroll your shop"
-                style={{
-                  background: !isPrep || my.energy < SHOP_REFRESH_COST ? "transparent" : C.panel2,
-                  border: `1px solid ${!isPrep || my.energy < SHOP_REFRESH_COST ? C.line : C.gold}`,
-                  color: !isPrep || my.energy < SHOP_REFRESH_COST ? C.dim : C.gold,
-                  borderRadius: 3,
-                  padding: "3px 8px",
-                  fontSize: 9.5,
-                  fontWeight: 700,
-                  fontFamily: FONT_UI,
-                  cursor: !isPrep || my.energy < SHOP_REFRESH_COST ? "default" : "pointer",
-                }}
-              >
-                ↻ Refresh ◈{SHOP_REFRESH_COST}
-              </button>
-              <div style={{ color: C.gold, fontSize: 12, fontWeight: 800, fontFamily: FONT_UI }}>◈ {my.energy}/{my.maxEnergy}</div>
+      {animActive ? (
+        // Live-animated round playback — same attack-lunge/dying/hit/fx
+        // animation and BoardRow single-player's Battle screen uses, replayed
+        // from the host's already-computed, deterministic fightResult, plus
+        // a scrolling combat log. Shopping resumes once this clears.
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          <div style={{ padding: "8px 16px 2px", color: C.dim, fontSize: 9.5, fontFamily: FONT_UI, letterSpacing: 1, textTransform: "uppercase", textAlign: "center" }}>{oppName}</div>
+          <BoardRow
+            board={displayOppBoard.length ? displayOppBoard : Array(SQUAD_SIZE).fill(null)}
+            attackingSlots={oppAttacking}
+            dyingSlots={oppDying}
+            hitSlots={oppHit}
+            fx={oppFxList}
+            faceHit={pvpAnim?.faceHit && pvpAnim?.attackerSide === "opp"}
+            travel={pvpAnim?.travel}
+            travelX={pvpAnim?.travelX}
+            slotRefs={oppSlotRefs}
+          />
+          <div style={{ flex: 1, overflowY: "auto", padding: "4px 16px", display: "flex", flexDirection: "column-reverse" }}>
+            <div>
+              {pvpLog.map((l, i) => (
+                <div key={i} style={{ color: C.ash, fontSize: 10.5, padding: "2px 0", fontFamily: FONT_BODY, fontStyle: "italic" }}>
+                  {l}
+                </div>
+              ))}
             </div>
           </div>
-          <div style={{ display: "flex", gap: 6, overflowX: "auto" }}>
-            {(my.shop || []).map((inst, i) => {
-              if (!inst) return <div key={i} style={{ width: 60, height: 60 }} />;
-              // CardFace's `small` (compact) rendering — the only mode PvP
-              // uses for shop/hand/board tiles — deliberately shows only
-              // ATK/HP/level corner badges and skips the cost row (that row
-              // only exists in the full-size card layout). Single-player's
-              // shop works around this with its own separate "Buy ◈{cost}"
-              // button under each small CardFace; PvP's shop never had one,
-              // so no price was ever visible here. Mirror that here.
-              const cost = SHOP_COST_BY_RARITY[CARD_BY_ID[inst.cardId].rarity];
-              const canAfford = isPrep && my.energy >= cost && (my.hand || []).length < HAND_CAP;
-              return (
-                <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
-                  <CardFace cardId={inst.cardId} level={inst.level} bonusAtk={inst.bonusAtk} bonusHp={inst.bonusHp} small disabled={!canAfford} onClick={() => buyCard(i)} />
-                  <button
-                    onClick={() => buyCard(i)}
-                    disabled={!canAfford}
-                    style={{
-                      width: 60,
-                      background: canAfford ? `linear-gradient(180deg, #F3D27A, ${C.gold})` : C.panel2,
-                      color: canAfford ? "#1a1200" : C.dim,
-                      border: `1px solid ${canAfford ? "#FFE9B0" : C.line}`,
-                      borderRadius: 3,
-                      padding: "3px 0",
-                      fontWeight: 800,
-                      fontSize: 9.5,
-                      fontFamily: FONT_UI,
-                      cursor: canAfford ? "pointer" : "default",
-                    }}
-                  >
-                    Buy ◈{cost}
-                  </button>
-                </div>
-              );
-            })}
+          <BoardRow
+            board={displayMyBoard.length ? displayMyBoard : Array(SQUAD_SIZE).fill(null)}
+            mine
+            attackingSlots={mineAttacking}
+            dyingSlots={mineDying}
+            hitSlots={mineHit}
+            fx={mineFxList}
+            faceHit={pvpAnim?.faceHit && pvpAnim?.attackerSide === "mine"}
+            travel={pvpAnim?.travel}
+            travelX={pvpAnim?.travelX}
+            slotRefs={mySlotRefs}
+          />
+          <div style={{ padding: "2px 16px 8px", color: C.dim, fontSize: 9.5, fontFamily: FONT_UI, letterSpacing: 1, textTransform: "uppercase", textAlign: "center" }}>{myName}</div>
+        </div>
+      ) : (
+        <div style={{ flex: 1, overflowY: "auto", padding: "10px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+          <div>
+            <div style={{ color: C.dim, fontSize: 9.5, fontFamily: FONT_UI, letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 }}>{oppName}'s Board</div>
+            <div style={{ display: "flex", gap: 6, overflowX: "auto", padding: "2px 0" }}>
+              {(displayOppBoard.length ? displayOppBoard : Array(SQUAD_SIZE).fill(null)).map((c, i) => (
+                <PvpBoardTile key={i} creature={c} />
+              ))}
+            </div>
+          </div>
+          <div>
+            <div style={{ color: C.dim, fontSize: 9.5, fontFamily: FONT_UI, letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 }}>{oppName}'s Shop</div>
+            <div style={{ display: "flex", gap: 6, overflowX: "auto" }}>
+              {(opp.shop || []).map((inst, i) =>
+                inst ? <CardFace key={i} cardId={inst.cardId} level={inst.level} bonusAtk={inst.bonusAtk} bonusHp={inst.bonusHp} small disabled /> : <div key={i} style={{ width: 60, height: 60 }} />
+              )}
+            </div>
+          </div>
+
+          <Ornament color={C.line} />
+
+          <div>
+            <div style={{ color: C.dim, fontSize: 9.5, fontFamily: FONT_UI, letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 }}>
+              Your Board {selectedHandIdx != null && <span style={{ color: C.gold }}>— tap an empty slot to deploy</span>}
+            </div>
+            <div style={{ display: "flex", gap: 6, overflowX: "auto", padding: "2px 0" }}>
+              {(displayMyBoard.length ? displayMyBoard : Array(SQUAD_SIZE).fill(null)).map((c, i) => (
+                <PvpBoardTile key={i} creature={c} onClick={isPrep ? (c ? () => sellFromBoard(i) : () => deployCard(i)) : undefined} pulse={isPrep && !c && selectedHandIdx != null} />
+              ))}
+            </div>
+          </div>
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+              <div style={{ color: C.dim, fontSize: 9.5, fontFamily: FONT_UI, letterSpacing: 1, textTransform: "uppercase" }}>Your Shop</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <button
+                  onClick={refreshShop}
+                  disabled={!isPrep || my.energy < SHOP_REFRESH_COST}
+                  title="Reroll your shop"
+                  style={{
+                    background: !isPrep || my.energy < SHOP_REFRESH_COST ? "transparent" : C.panel2,
+                    border: `1px solid ${!isPrep || my.energy < SHOP_REFRESH_COST ? C.line : C.gold}`,
+                    color: !isPrep || my.energy < SHOP_REFRESH_COST ? C.dim : C.gold,
+                    borderRadius: 3,
+                    padding: "3px 8px",
+                    fontSize: 9.5,
+                    fontWeight: 700,
+                    fontFamily: FONT_UI,
+                    cursor: !isPrep || my.energy < SHOP_REFRESH_COST ? "default" : "pointer",
+                  }}
+                >
+                  ↻ Refresh ◈{SHOP_REFRESH_COST}
+                </button>
+                <div style={{ color: C.gold, fontSize: 12, fontWeight: 800, fontFamily: FONT_UI }}>◈ {my.energy}/{my.maxEnergy}</div>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 6, overflowX: "auto" }}>
+              {(my.shop || []).map((inst, i) => {
+                if (!inst) return <div key={i} style={{ width: 60, height: 60 }} />;
+                // CardFace's `small` (compact) rendering — the only mode PvP
+                // uses for shop/hand/board tiles — deliberately shows only
+                // ATK/HP/level corner badges and skips the cost row (that row
+                // only exists in the full-size card layout). Single-player's
+                // shop works around this with its own separate "Buy ◈{cost}"
+                // button under each small CardFace; PvP's shop never had one,
+                // so no price was ever visible here. Mirror that here.
+                const cost = SHOP_COST_BY_RARITY[CARD_BY_ID[inst.cardId].rarity];
+                const canAfford = isPrep && my.energy >= cost && (my.hand || []).length < HAND_CAP;
+                return (
+                  <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
+                    <CardFace cardId={inst.cardId} level={inst.level} bonusAtk={inst.bonusAtk} bonusHp={inst.bonusHp} small disabled={!canAfford} onClick={() => buyCard(i)} />
+                    <button
+                      onClick={() => buyCard(i)}
+                      disabled={!canAfford}
+                      style={{
+                        width: 60,
+                        background: canAfford ? `linear-gradient(180deg, #F3D27A, ${C.gold})` : C.panel2,
+                        color: canAfford ? "#1a1200" : C.dim,
+                        border: `1px solid ${canAfford ? "#FFE9B0" : C.line}`,
+                        borderRadius: 3,
+                        padding: "3px 0",
+                        fontWeight: 800,
+                        fontSize: 9.5,
+                        fontFamily: FONT_UI,
+                        cursor: canAfford ? "pointer" : "default",
+                      }}
+                    >
+                      Buy ◈{cost}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <div>
+            <div style={{ color: C.dim, fontSize: 9.5, fontFamily: FONT_UI, letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 }}>Your Hand — tap to select, tap again to sell</div>
+            <div style={{ display: "flex", gap: 6, overflowX: "auto" }}>
+              {(my.hand || []).map((inst, i) => (
+                <CardFace
+                  key={i}
+                  cardId={inst.cardId}
+                  level={inst.level}
+                  bonusAtk={inst.bonusAtk}
+                  bonusHp={inst.bonusHp}
+                  small
+                  disabled={!isPrep}
+                  selected={selectedHandIdx === i}
+                  onClick={() => (selectedHandIdx === i ? sellFromHand(i) : setSelectedHandIdx(i))}
+                />
+              ))}
+            </div>
           </div>
         </div>
-        <div>
-          <div style={{ color: C.dim, fontSize: 9.5, fontFamily: FONT_UI, letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 }}>Your Hand — tap to select, tap again to sell</div>
-          <div style={{ display: "flex", gap: 6, overflowX: "auto" }}>
-            {(my.hand || []).map((inst, i) => (
-              <CardFace
-                key={i}
-                cardId={inst.cardId}
-                level={inst.level}
-                bonusAtk={inst.bonusAtk}
-                bonusHp={inst.bonusHp}
-                small
-                disabled={!isPrep}
-                selected={selectedHandIdx === i}
-                onClick={() => (selectedHandIdx === i ? sellFromHand(i) : setSelectedHandIdx(i))}
-              />
-            ))}
-          </div>
-        </div>
-      </div>
+      )}
 
       <div style={{ padding: "10px 14px 16px" }}>
         <button
@@ -5898,7 +6037,7 @@ function PvPBattle({ state, matchId, onExit }) {
             boxShadow: !isPrep ? "none" : `0 0 10px ${C.gold}55`,
           }}
         >
-          {match.status !== "prep" ? "⚔ Fighting…" : my.ready ? "Waiting for opponent…" : "Battle"}
+          {match.status !== "prep" || animActive ? "⚔ Fighting…" : my.ready ? "Waiting for opponent…" : "Battle"}
         </button>
       </div>
     </div>
