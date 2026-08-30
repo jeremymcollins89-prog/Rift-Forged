@@ -1398,6 +1398,47 @@ function GoldPill({ gold }) {
   );
 }
 
+// A continuously-shimmering rainbow foil, exclusive to Mythic-rarity cards —
+// the "holographic trading card" look. Two blended layers stacked over the
+// art: a rainbow sheen (color-dodge, slow diagonal drift) plus a brighter
+// glare band (overlay, a faster sweep) for that glint-under-the-light pop.
+// Purely decorative — every non-Mythic rarity renders nothing. Every caller
+// already wraps this in an `overflow: hidden` art container, so it clips to
+// that container's own shape without needing its own border-radius.
+function HoloShine({ rarity }) {
+  if (rarity !== "mythic") return null;
+  return (
+    <>
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          pointerEvents: "none",
+          zIndex: 3,
+          mixBlendMode: "color-dodge",
+          opacity: 0.5,
+          background: "repeating-linear-gradient(115deg, #ff5ec4 0%, #ffe38a 12%, #7dffb0 24%, #6fd4ff 36%, #c39bff 48%, #ff5ec4 60%)",
+          backgroundSize: "260% 260%",
+          animation: "holoSheen 4.5s linear infinite",
+        }}
+      />
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          pointerEvents: "none",
+          zIndex: 3,
+          mixBlendMode: "overlay",
+          opacity: 0.65,
+          background: "linear-gradient(100deg, transparent 30%, #ffffffcc 46%, #ffffffcc 54%, transparent 70%)",
+          backgroundSize: "260% 260%",
+          animation: "holoGlare 3.1s ease-in-out infinite",
+        }}
+      />
+    </>
+  );
+}
+
 function CardFace({ cardId, level, count, onClick, small, disabled, selected, showCost = true, bonusAtk = 0, bonusHp = 0, locked = false, battleLevel = 0, equipped }) {
   const base = CARD_BY_ID[cardId];
   const s = statFor(cardId, level || 1, bonusAtk, bonusHp);
@@ -1445,6 +1486,7 @@ function CardFace({ cardId, level, count, onClick, small, disabled, selected, sh
         }}
       >
         {artUrl ? <img src={artUrl} alt={base.name} style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center 20%", display: "block" }} /> : cardArtSvg(base.id, base.faction, base.type, base.rarity)}
+        <HoloShine rarity={base.rarity} />
         {/* subtle top/bottom shading so the corner badges stay legible over bright art */}
         <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, #000000b0 0%, transparent 26%, transparent 74%, #000000b0 100%)", pointerEvents: "none" }} />
 
@@ -1572,6 +1614,7 @@ function CardFace({ cardId, level, count, onClick, small, disabled, selected, sh
       <div style={{ position: "relative", margin: small ? "3px 5px" : "4px 7px" }}>
         <div style={{ position: "relative", aspectRatio: "1 / 1", borderRadius: 2, overflow: "hidden", border: `1px solid ${fc}55`, boxShadow: "inset 0 0 14px #000000dd", background: C.void }}>
           {artUrl ? <img src={artUrl} alt={base.name} style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center 30%", display: "block" }} /> : cardArtSvg(base.id, base.faction, base.type, base.rarity)}
+          <HoloShine rarity={base.rarity} />
         </div>
         {/* ATK/HP badges directly on the art, at the bottom corners */}
         {base.type === "creature" && (
@@ -5071,12 +5114,13 @@ function BoardRow({ board, mine, onView, attackingSlots = [], dyingSlots = [], h
             )}
             {c && (
               <>
-                <div style={{ flex: 1, overflow: "hidden", borderBottom: `1px solid ${C.line}`, borderRadius: "6px 6px 0 0", background: C.void }}>
+                <div style={{ position: "relative", flex: 1, overflow: "hidden", borderBottom: `1px solid ${C.line}`, borderRadius: "6px 6px 0 0", background: C.void }}>
                   {artUrl ? (
                     <img src={artUrl} alt={displayName} style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center 20%", display: "block" }} />
                   ) : (
                     cardArtSvg(base.id, base.faction, base.type, base.rarity)
                   )}
+                  <HoloShine rarity={base.rarity} />
                 </div>
                 <div style={{ fontSize: 6.5, color: C.bone, fontWeight: 700, textAlign: "center", padding: "1px 1px 0", lineHeight: 1.05, fontFamily: FONT_DISPLAY, minHeight: 14, display: "flex", alignItems: "center", justifyContent: "center" }}>
                   {displayName}
@@ -5359,6 +5403,7 @@ function PvpBoardTile({ creature, onClick, faded, pulse }) {
       }}
     >
       {artUrl ? <img src={artUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : cardArtSvg(base.id, base.faction, base.type, base.rarity)}
+      <HoloShine rarity={base.rarity} />
       <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, transparent 55%, #000000c8 100%)", pointerEvents: "none" }} />
       <div style={{ position: "absolute", bottom: 2, left: 2, background: "#000000d0", border: `1px solid ${C.danger}`, borderRadius: 3, padding: "1px 3px", fontSize: 9, fontWeight: 800, color: C.danger }}>{creature.atk}</div>
       <div style={{ position: "absolute", bottom: 2, right: 2, background: "#000000d0", border: "1px solid #7ED0FF", borderRadius: 3, padding: "1px 3px", fontSize: 9, fontWeight: 800, color: "#7ED0FF" }}>{creature.curHp}</div>
@@ -7020,7 +7065,11 @@ export default function App() {
         position: "relative",
       }}
     >
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700;900&family=EB+Garamond:ital,wght@0,400;0,600;1,400&display=swap');`}</style>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700;900&family=EB+Garamond:ital,wght@0,400;0,600;1,400&display=swap');
+        @keyframes holoSheen { 0%{background-position: 0% 30%;} 100%{background-position: 200% 70%;} }
+        @keyframes holoGlare { 0%,100%{background-position: -60% 0%;} 50%{background-position: 160% 0%;} }
+      `}</style>
       {/* fine grain texture */}
       <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none", zIndex: 6, opacity: 0.05, mixBlendMode: "overlay" }}>
         <filter id="grain">
