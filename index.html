@@ -13,7 +13,21 @@
 <meta name="apple-mobile-web-app-title" content="Rift-Forged" />
 <style>
   html, body { margin: 0; padding: 0; background: #0a0812; height: 100%; overscroll-behavior: none; }
-  #root { height: calc(var(--vh, 1vh) * 100); }
+  /* iPhones with a notch/Dynamic Island (and, added to the Home Screen, the
+     status bar too, since apple-mobile-web-app-status-bar-style is set to
+     black-translucent so it overlays the page instead of pushing it down)
+     otherwise draw right over whatever sits at the very top of the app —
+     exactly the buttons that were unreachable. env(safe-area-inset-*) only
+     resolves to a nonzero value because viewport-fit=cover is set above;
+     padding the root by it (with border-box, so the box itself still exactly
+     fills the screen) pushes all content into the safe area uniformly,
+     everywhere in the app, without touching every screen's own layout. */
+  #root {
+    height: calc(var(--vh, 1vh) * 100);
+    box-sizing: border-box;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    background: #0a0812;
+  }
   * { -webkit-tap-highlight-color: transparent; }
   #boot-error { display:none; color:#fff; font-family: monospace; font-size: 12px; padding: 16px; white-space: pre-wrap; background:#3a0a12; }
 </style>
