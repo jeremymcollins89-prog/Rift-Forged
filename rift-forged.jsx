@@ -1412,14 +1412,14 @@ function GoldPill({ gold }) {
 
 // A continuously-shimmering silver foil, exclusive to Mythic-rarity cards —
 // the "holographic trading card" look. Two blended layers stacked over the
-// art, both intentionally faint (soft-light/screen at low opacity) so the
-// art's own color and detail always stay the dominant thing you see: a
-// pale silvery sheen (slow diagonal drift) plus a brighter glare band (a
-// faster sweep) for that glint-under-the-light pop, without washing the
-// artwork out into rainbow static. Purely decorative — every non-Mythic
-// rarity renders nothing. Every caller already wraps this in an
-// `overflow: hidden` art container, so it clips to that container's own
-// shape without needing its own border-radius.
+// art, kept soft (soft-light/screen blend modes) so the art's own color and
+// detail always stay the dominant thing you see: a silvery sheen with a
+// faint pastel iridescence (slow diagonal drift) plus a brighter glare band
+// (a faster sweep) for that glint-under-the-light pop, without tipping into
+// rainbow static. Purely decorative — every non-Mythic rarity renders
+// nothing. Every caller already wraps this in an `overflow: hidden` art
+// container, so it clips to that container's own shape without needing its
+// own border-radius.
 function HoloShine({ rarity }) {
   if (rarity !== "mythic") return null;
   return (
@@ -1431,10 +1431,10 @@ function HoloShine({ rarity }) {
           pointerEvents: "none",
           zIndex: 3,
           mixBlendMode: "soft-light",
-          opacity: 0.3,
-          background: "repeating-linear-gradient(115deg, #ffffff 0%, #dce6f5 10%, #ffffff 20%, #eef4ff 30%, #ffffff 40%)",
+          opacity: 0.45,
+          background: "repeating-linear-gradient(115deg, #ffffff 0%, #dce6f5 8%, #f5e6ff 16%, #ffffff 24%, #e6f7ff 32%, #fdf0e6 40%, #ffffff 48%)",
           backgroundSize: "240% 240%",
-          animation: "holoSheen 6s linear infinite",
+          animation: "holoSheen 5s linear infinite",
         }}
       />
       <div
@@ -1444,10 +1444,10 @@ function HoloShine({ rarity }) {
           pointerEvents: "none",
           zIndex: 3,
           mixBlendMode: "screen",
-          opacity: 0.22,
-          background: "linear-gradient(100deg, transparent 35%, #ffffffcc 48%, #ffffffcc 52%, transparent 65%)",
+          opacity: 0.32,
+          background: "linear-gradient(100deg, transparent 32%, #ffffffdd 48%, #ffffffdd 52%, transparent 68%)",
           backgroundSize: "260% 260%",
-          animation: "holoGlare 3.6s ease-in-out infinite",
+          animation: "holoGlare 3.2s ease-in-out infinite",
         }}
       />
     </>
